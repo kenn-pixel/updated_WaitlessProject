@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { modals } from '@mantine/modals'
 import {
   IconPlayerSkipForward, IconCircleCheck, IconArrowRight,
@@ -6,16 +6,10 @@ import {
   IconAlertTriangle, IconInbox, IconStethoscope,
 } from '@tabler/icons-react'
 import DashboardLayout from '../components/DashboardLayout'
+import { supabase } from '../supabaseClient'
+import { QUEUE_TABLE } from '../supabaseTables'
 
 const PRIORITY_ORDER = { urgent: 0, senior: 1, pwd: 2, normal: 3 }
-
-const INITIAL_QUEUE = [
-  { id: 1, token: 'A-003', name: 'Maria Santos', service: 'Consultation', priority: 'urgent', waitMin: 35 },
-  { id: 2, token: 'A-004', name: 'Jose Reyes', service: 'Vaccination', priority: 'senior', waitMin: 28 },
-  { id: 3, token: 'A-005', name: 'Ana Cruz', service: 'Prenatal', priority: 'normal', waitMin: 22 },
-  { id: 4, token: 'A-006', name: 'Pedro Lim', service: 'Lab Request', priority: 'pwd', waitMin: 18 },
-  { id: 5, token: 'A-007', name: 'Rosa Dela Cruz', service: 'Dental', priority: 'normal', waitMin: 12 },
-]
 
 const PRIORITY_META = {
   urgent: { label: 'Urgent', color: '#FF5F5F' },
@@ -81,28 +75,111 @@ function QueueItem({ item, onSkip }) {
 
 export default function QueueDashboard() {
   'use no memo'
-  const [queue, setQueue] = useState([...INITIAL_QUEUE].sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]))
+  const [queue, setQueue] = useState([])
   const [serving, setServing] = useState(null)
   const [servedCount, setServedCount] = useState(0)
   const [callingNext, setCallingNext] = useState(false)
   const [doneBusy, setDoneBusy] = useState(false)
   const [smsBusy, setSmsBusy] = useState(false)
+  const [fetchError, setFetchError] = useState('')
+
+  const loadQueue = async () => {
+    const { data, error } = await supabase.from(QUEUE_TABLE).select('*').order('created_at', { ascending: true })
+    console.log('Queue fetch result:', { dataLength: data?.length, data, error })
+    if (error) {
+      console.error('Supabase queue fetch error:', error)
+      setFetchError(`Failed to load queue: ${error.message}`)
+      return
+    }
+    if (!data || data.length === 0) {
+      console.warn('No queue data returned - likely RLS is blocking access. Data:', data)
+      setFetchError('No queue data found. Check Supabase RLS policies.')
+      return
+    }
+
+    const entries = data.map((item) => ({
+      id: item.id,
+      token: item.token ?? item.ticket ?? item.queue_no ?? 'TBD',
+      name: item.name ?? item.patient_name ?? 'Unknown',
+      service: item.service ?? item.department ?? 'General',
+      priority: item.priority ?? item.priority_level ?? 'normal',
+      waitMin: item.wait_min ?? item.waitMin ?? 0,
+      status: item.status ?? 'waiting',
+      position: item.position ?? 0,
+      createdAt: item.created_at,
+    }))
+
+    const sorted = entries.sort((a, b) => {
+      const positionDiff = (a.position ?? 0) - (b.position ?? 0)
+      if (positionDiff !== 0) return positionDiff
+      return new Date(a.createdAt) - new Date(b.createdAt)
+    })
+
+    const currentServing = sorted.find(item => item.status === 'serving') || null
+    const waiting = sorted.filter(item => item.status === 'waiting')
+    const served = sorted.filter(item => item.status === 'served')
+
+    setServing(currentServing)
+    setQueue(waiting)
+    setServedCount(served.length)
+  }
+
+  useEffect(() => {
+    loadQueue()
+
+    const channel = supabase.channel('queue-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: QUEUE_TABLE }, () => {
+        loadQueue()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
 
   const callNext = async () => {
     if (!queue.length) return
     setCallingNext(true)
-    await new Promise(r => setTimeout(r, 900))
-    const [next, ...rest] = queue
-    setServing(next)
-    setQueue(rest)
-    setCallingNext(false)
+    setFetchError('')
+
+    try {
+      const next = queue[0]
+
+      if (serving?.id) {
+        const { error: servedError } = await supabase
+          .from(QUEUE_TABLE)
+          .update({ status: 'served' })
+          .eq('id', serving.id)
+
+        if (servedError) {
+          throw servedError
+        }
+      }
+
+      const { error: servingError } = await supabase
+        .from(QUEUE_TABLE)
+        .update({ status: 'serving' })
+        .eq('id', next.id)
+
+      if (servingError) {
+        throw servingError
+      }
+
+      await loadQueue()
+    } catch (error) {
+      console.error('Failed to call next patient:', error)
+      setFetchError('Unable to advance the queue. Please refresh and try again.')
+    } finally {
+      setCallingNext(false)
+    }
   }
 
   const markDone = async () => {
+    if (!serving?.id) return
     setDoneBusy(true)
-    await new Promise(r => setTimeout(r, 700))
-    setServedCount(c => c + 1)
-    setServing(null)
+    await supabase.from(QUEUE_TABLE).update({ status: 'served' }).eq('id', serving.id)
+    await loadQueue()
     setDoneBusy(false)
   }
 
@@ -117,12 +194,24 @@ export default function QueueDashboard() {
       ),
       labels: { confirm: 'Yes, Skip', cancel: 'Cancel' },
       confirmProps: { color: 'red' },
-      onConfirm: () => {
+      onConfirm: async () => {
+        const maxPosition = Math.max(
+          0,
+          ...(queue.map(i => i.position ?? 0)),
+          serving?.position ?? 0
+        )
+        const next = queue.find(i => i.id !== item.id)
+
         if (serving?.id === item.id) {
-          setServing(null)
+          await supabase.from(QUEUE_TABLE).update({ status: 'waiting', position: maxPosition + 1 }).eq('id', item.id)
+          if (next?.id) {
+            await supabase.from(QUEUE_TABLE).update({ status: 'serving' }).eq('id', next.id)
+          }
         } else {
-          setQueue(q => [...q.filter(i => i.id !== item.id), item])
+          await supabase.from(QUEUE_TABLE).update({ position: maxPosition + 1 }).eq('id', item.id)
         }
+
+        await loadQueue()
       },
     })
   }
@@ -141,6 +230,12 @@ export default function QueueDashboard() {
         <h1 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Queue Management</h1>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Manage today's patient queue in real time.</p>
       </div>
+
+      {fetchError && (
+        <div className="card-2" style={{ marginBottom: '1rem', color: '#F5A623' }}>
+          {fetchError}
+        </div>
+      )}
 
       {/* Stats row */}
       <div style={{ display: 'flex', gap: '0.875rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>

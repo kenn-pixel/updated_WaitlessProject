@@ -5,14 +5,17 @@ import { useAuth } from '../context/AuthContext'
 import { useTheme } from '../context/ThemeContext'
 
 export default function LoginPage() {
-  const { login } = useAuth()
+  const { login, signUp } = useAuth()
   const { theme, toggle } = useTheme()
   const navigate = useNavigate()
 
   const [form, setForm] = useState({ email: '', password: '' })
   const [errors, setErrors] = useState({})
+  const [apiError, setApiError] = useState('')
+  const [infoMessage, setInfoMessage] = useState('')
   const [showPw, setShowPw] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [isSignup, setIsSignup] = useState(false)
 
   const validate = () => {
     const e = {}
@@ -21,14 +24,102 @@ export default function LoginPage() {
     return e
   }
 
+  const handleCreateDemoUser = async () => {
+    const demoCredentials = {
+      email: 'demo.staff@bhc.gov.ph',
+      password: 'Demo1234!'
+    }
+
+    setForm(demoCredentials)
+    setErrors({})
+    setApiError('')
+    setInfoMessage('')
+    setLoading(true)
+    setIsSignup(true)
+
+    const { error, data } = await signUp(demoCredentials.email, demoCredentials.password)
+    setLoading(false)
+
+    if (error) {
+      setApiError(error.message || 'Unable to create demo account. Try signing in instead.')
+      return
+    }
+
+    if (data?.user) {
+      navigate('/dashboard')
+      return
+    }
+
+    setInfoMessage('Demo account created. Check your email to verify and then sign in.')
+  }
+
+  const handleCreateAdminDemoUser = async () => {
+    const adminCredentials = {
+      email: 'demo.admin@bhc.gov.ph',
+      password: 'Admin1234!'
+    }
+
+    setForm(adminCredentials)
+    setErrors({})
+    setApiError('')
+    setInfoMessage('')
+    setLoading(true)
+    setIsSignup(true)
+
+    const { error, data } = await signUp(adminCredentials.email, adminCredentials.password)
+    setLoading(false)
+
+    if (error) {
+      setApiError(error.message || 'Unable to create admin demo account. Try signing in instead.')
+      return
+    }
+
+    if (data?.user) {
+      navigate('/analytics')
+      return
+    }
+
+    setInfoMessage('Admin demo account created. Check your email to verify and then sign in.')
+  }
+
   const handleSubmit = async (ev) => {
     ev.preventDefault()
     const e = validate()
-    if (Object.keys(e).length) { setErrors(e); return }
+    if (Object.keys(e).length) {
+      setErrors(e)
+      return
+    }
+
     setErrors({})
+    setApiError('')
+    setInfoMessage('')
     setLoading(true)
-    await new Promise(r => setTimeout(r, 1200)) // simulate API
-    login(form.email, form.email.includes('admin') ? 'admin' : 'staff')
+
+    if (isSignup) {
+      const { error, data } = await signUp(form.email, form.password)
+      setLoading(false)
+      if (error) {
+        setApiError(error.message || 'Unable to create account.')
+        return
+      }
+      if (data?.user) {
+        navigate('/dashboard')
+        return
+      }
+      setInfoMessage('Account created. Check your email to verify and then sign in.')
+      setForm({ email: '', password: '' })
+      setIsSignup(false)
+      return
+    }
+
+    const { error } = await login(form.email, form.password)
+    setLoading(false)
+
+    if (error) {
+      setApiError(error.message || 'Unable to sign in. Please check your credentials.')
+      return
+    }
+
     navigate('/dashboard')
   }
 
@@ -63,7 +154,9 @@ export default function LoginPage() {
 
         {/* Card */}
         <div className="card" style={{ padding: '2rem' }}>
-          <h2 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1.5rem' }}>Sign in to your account</h2>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 600, marginBottom: '1.5rem' }}>
+            {isSignup ? 'Create a new account' : 'Sign in to your account'}
+          </h2>
 
           <form onSubmit={handleSubmit} noValidate>
             {/* Email */}
@@ -123,10 +216,48 @@ export default function LoginPage() {
               )}
             </div>
 
+            {apiError && (
+              <p style={{ color: '#FF5F5F', fontSize: '0.85rem', marginBottom: '1rem' }}>{apiError}</p>
+            )}
+            {infoMessage && (
+              <p style={{ color: '#3DD68C', fontSize: '0.85rem', marginBottom: '1rem' }}>{infoMessage}</p>
+            )}
+
             <button className="btn-primary" type="submit" disabled={loading} style={{ width: '100%', padding: '0.625rem' }}>
-              {loading ? <><span className="spinner" /> Signing in...</> : 'Sign In'}
+              {loading
+                ? <><span className="spinner" /> {isSignup ? 'Creating account...' : 'Signing in...'}</>
+                : (isSignup ? 'Create account' : 'Sign In')}
             </button>
           </form>
+        </div>
+
+        <div style={{ textAlign: 'center', marginTop: '1rem', fontSize: '0.85rem' }}>
+          {isSignup ? (
+            <>
+              Already have an account?{' '}
+              <button className="btn-link" type="button" onClick={() => { setIsSignup(false); setApiError(''); setInfoMessage('') }} style={{ color: '#00C9A7', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                Sign in
+              </button>
+              .
+            </>
+          ) : (
+            <>
+              Need an account?{' '}
+              <button className="btn-link" type="button" onClick={() => { setIsSignup(true); setApiError(''); setInfoMessage('') }} style={{ color: '#00C9A7', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                Sign up
+              </button>
+              .
+            </>
+          )}
+        </div>
+
+        <div style={{ textAlign: 'center', marginTop: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+          <button className="btn-secondary" type="button" onClick={handleCreateDemoUser} style={{ padding: '0.75rem 1rem', border: 'none', cursor: 'pointer' }}>
+            Create demo staff account
+          </button>
+          <button className="btn-secondary" type="button" onClick={handleCreateAdminDemoUser} style={{ padding: '0.75rem 1rem', border: 'none', cursor: 'pointer' }}>
+            Create demo admin account
+          </button>
         </div>
 
         <p style={{ textAlign: 'center', marginTop: '1.25rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>

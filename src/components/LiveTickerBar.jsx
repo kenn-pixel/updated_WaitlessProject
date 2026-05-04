@@ -1,15 +1,65 @@
+import { useEffect, useState } from 'react'
 import { IconRadio } from '@tabler/icons-react'
-
-const MOCK_TICKER = [
-  { token: 'A-003', name: 'Maria Santos', service: 'Consultation' },
-  { token: 'A-004', name: 'Jose Reyes', service: 'Vaccination' },
-  { token: 'A-005', name: 'Ana Cruz', service: 'Prenatal' },
-  { token: 'A-006', name: 'Pedro Lim', service: 'Lab Request' },
-  { token: 'A-007', name: 'Rosa Dela Cruz', service: 'Dental' },
-]
+import { supabase } from '../supabaseClient'
+import { QUEUE_TABLE } from '../supabaseTables'
 
 export default function LiveTickerBar() {
-  const items = [...MOCK_TICKER, ...MOCK_TICKER] // duplicate for seamless loop
+  const [items, setItems] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const loadTicker = async () => {
+    const { data, error } = await supabase
+      .from(QUEUE_TABLE)
+      .select('id, token, name, service, status, position, created_at')
+      .in('status', ['waiting', 'serving'])
+      .order('position', { ascending: true, nulls: 'last' })
+      .order('created_at', { ascending: true })
+
+    if (error) {
+      console.error('Ticker fetch error:', error)
+      setItems([])
+      setLoading(false)
+      return
+    }
+
+    const normalized = (data || []).map(item => ({
+      token: item.token ?? item.ticket ?? item.queue_no ?? 'TBD',
+      name: item.name ?? item.patient_name ?? 'Unknown',
+      service: item.service ?? item.department ?? 'General',
+      status: item.status ?? 'waiting',
+    }))
+
+    normalized.sort((a, b) => {
+      const aRank = a.status === 'serving' ? 0 : 1
+      const bRank = b.status === 'serving' ? 0 : 1
+      return aRank - bRank
+    })
+
+    setItems(normalized.slice(0, 10))
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    loadTicker()
+
+    const channel = supabase.channel('queue-ticker')
+      .on('postgres_changes', { event: '*', schema: 'public', table: QUEUE_TABLE }, () => {
+        loadTicker()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
+
+  const tickerItems = loading
+    ? [{ token: 'Loading...', name: 'Fetching live queue', service: '' }]
+    : items.length > 0
+      ? items
+      : [{ token: 'No waiting patients', name: 'Queue is empty', service: '' }]
+
+  const displayItems = [...tickerItems, ...tickerItems]
 
   return (
     <div
@@ -23,7 +73,6 @@ export default function LiveTickerBar() {
         alignItems: 'center',
       }}
     >
-      {/* Label */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: '0.375rem',
         padding: '0 0.875rem', borderRight: '1px solid var(--border)',
@@ -36,11 +85,10 @@ export default function LiveTickerBar() {
         Live
       </div>
 
-      {/* Scrolling track */}
       <div style={{ overflow: 'hidden', flex: 1 }}>
         <div className="ticker-track">
-          {items.map((item, i) => (
-            <span key={i} style={{
+          {displayItems.map((item, i) => (
+            <span key={`${item.token}-${item.name}-${i}`} style={{
               display: 'inline-flex', alignItems: 'center', gap: '0.375rem',
               padding: '0 1.5rem', fontSize: '0.75rem', color: 'var(--text-muted)',
               whiteSpace: 'nowrap',
@@ -49,8 +97,15 @@ export default function LiveTickerBar() {
                 {item.token}
               </span>
               <span>{item.name}</span>
-              <span style={{ color: 'var(--border)' }}>·</span>
-              <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>{item.service}</span>
+              {item.service && (
+                <>
+                  <span style={{ color: 'var(--border)' }}>·</span>
+                  <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>{item.service}</span>
+                </>
+              )}
+              {item.status === 'serving' && (
+                <span style={{ color: '#00C9A7', fontSize: '0.72rem', fontWeight: 700 }}>Now serving</span>
+              )}
               <span style={{ color: 'var(--border)', marginLeft: '0.75rem' }}>|</span>
             </span>
           ))}

@@ -1,20 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { modals } from '@mantine/modals'
 import {
   IconCalendarEvent, IconSearch, IconFilter,
   IconCircleCheck, IconX, IconClock, IconStethoscope,
-  IconPhone, IconUser, IconInbox,
+  IconPhone, IconUser, IconInbox, IconLogin,
 } from '@tabler/icons-react'
 import DashboardLayout from '../components/DashboardLayout'
-
-const MOCK_APPOINTMENTS = [
-  { id: 1, token: 'A-041', name: 'Maria Santos',   phone: '09171234567', service: 'Consultation', date: '2025-07-14', time: '8:00 AM',  status: 'pending' },
-  { id: 2, token: 'A-042', name: 'Jose Reyes',     phone: '09281234567', service: 'Vaccination',  date: '2025-07-14', time: '9:00 AM',  status: 'confirmed' },
-  { id: 3, token: 'A-043', name: 'Ana Cruz',       phone: '09391234567', service: 'Prenatal',     date: '2025-07-14', time: '10:00 AM', status: 'pending' },
-  { id: 4, token: 'A-044', name: 'Pedro Lim',      phone: '09451234567', service: 'Lab Request',  date: '2025-07-15', time: '8:00 AM',  status: 'completed' },
-  { id: 5, token: 'A-045', name: 'Rosa Dela Cruz', phone: '09561234567', service: 'Dental',       date: '2025-07-15', time: '2:00 PM',  status: 'cancelled' },
-  { id: 6, token: 'A-046', name: 'Carlos Bautista',phone: '09671234567', service: 'Consultation', date: '2025-07-16', time: '11:00 AM', status: 'pending' },
-]
+import { supabase } from '../supabaseClient'
+import { APPOINTMENTS_TABLE, QUEUE_TABLE } from '../supabaseTables'
 
 const STATUS_META = {
   pending:   { label: 'Pending',   color: '#F5A623', cls: 'badge-warning' },
@@ -27,11 +20,52 @@ const SERVICES = ['All Services', 'Consultation', 'Vaccination', 'Prenatal', 'La
 
 export default function AppointmentsDashboard() {
   'use no memo'
-  const [appointments, setAppointments] = useState(MOCK_APPOINTMENTS)
+  const [appointments, setAppointments] = useState([])
   const [search, setSearch] = useState('')
   const [filterService, setFilterService] = useState('All Services')
   const [filterDate, setFilterDate] = useState('')
   const [busyId, setBusyId] = useState(null)
+  const [fetchError, setFetchError] = useState('')
+
+  useEffect(() => {
+    const loadAppointments = async () => {
+      const { data, error } = await supabase.from(APPOINTMENTS_TABLE).select('*')
+      console.log('Appointments fetch result:', { data, error })
+      if (error) {
+        console.error('Supabase appointments fetch error:', error)
+        setFetchError(`Failed to load appointments: ${error.message}`)
+        return
+      }
+      if (!data || data.length === 0) {
+        console.warn('No appointments data returned from Supabase')
+        return
+      }
+
+      setAppointments(data.map((item) => ({
+        id: item.id,
+        token: item.token ?? item.appointment_no ?? 'TBD',
+        name: item.name ?? item.patient_name ?? 'Unknown',
+        phone: item.phone ?? item.contact_number ?? '',
+        service: item.service ?? item.department ?? 'General',
+        date: item.date ?? item.appointment_date ?? '',
+        time: item.time ?? item.appointment_time ?? '',
+        status: item.status ?? 'pending',
+      })))
+    }
+
+    loadAppointments()
+
+    // Subscribe to realtime changes
+    const channel = supabase.channel('appointments-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: APPOINTMENTS_TABLE }, () => {
+        loadAppointments()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
 
   const filtered = appointments.filter(a => {
     const matchSearch = a.name.toLowerCase().includes(search.toLowerCase()) || a.token.includes(search.toUpperCase())
@@ -42,9 +76,69 @@ export default function AppointmentsDashboard() {
 
   const updateStatus = async (id, status) => {
     setBusyId(id)
-    await new Promise(r => setTimeout(r, 700))
-    setAppointments(list => list.map(a => a.id === id ? { ...a, status } : a))
-    setBusyId(null)
+    setFetchError('')
+
+    try {
+      const { error } = await supabase.from(APPOINTMENTS_TABLE).update({ status }).eq('id', id)
+      if (error) {
+        throw error
+      }
+
+      // Update local state
+      setAppointments(list => list.map(a => a.id === id ? { ...a, status } : a))
+    } catch (error) {
+      console.error('Failed to update appointment status:', error)
+      setFetchError(`Failed to update status: ${error.message}`)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const addToQueue = async (appt) => {
+    setBusyId(appt.id)
+    setFetchError('')
+
+    try {
+      // Add to queue table
+      const { error: queueError } = await supabase.from(QUEUE_TABLE).insert([
+        {
+          token: appt.token,
+          name: appt.name,
+          service: appt.service,
+          priority: 'normal',
+          wait_min: 0,
+          status: 'waiting',
+          position: 0,
+        },
+      ])
+
+      if (queueError) {
+        throw queueError
+      }
+
+      // Mark appointment as checked-in (update status to completed to close it out)
+      await updateStatus(appt.id, 'completed')
+    } catch (error) {
+      console.error('Failed to add appointment to queue:', error)
+      setFetchError(`Failed to check in patient: ${error.message}`)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const confirmCheckIn = (appt) => {
+    modals.openConfirmModal({
+      title: 'Check In Patient',
+      children: (
+        <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
+          Add <strong style={{ color: 'var(--text)' }}>{appt.name}</strong> ({appt.token}) to the waiting queue?
+          They will appear in Queue Management.
+        </p>
+      ),
+      labels: { confirm: 'Yes, Check In', cancel: 'Cancel' },
+      confirmProps: { color: 'green' },
+      onConfirm: () => addToQueue(appt),
+    })
   }
 
   const confirmCancel = (appt) => {
@@ -68,6 +162,12 @@ export default function AppointmentsDashboard() {
         <h1 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Appointments</h1>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Manage and track all patient appointments.</p>
       </div>
+
+      {fetchError && (
+        <div className="card-2" style={{ marginBottom: '1rem', color: '#F5A623' }}>
+          {fetchError}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="card" style={{ marginBottom: '1rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -155,7 +255,7 @@ export default function AppointmentsDashboard() {
                         <span className={`badge ${meta.cls}`}>{meta.label}</span>
                       </td>
                       <td style={{ padding: '0.75rem 1rem' }}>
-                        <div style={{ display: 'flex', gap: '0.375rem' }}>
+                        <div style={{ display: 'flex', gap: '0.375rem', flexWrap: 'wrap' }}>
                           {a.status === 'pending' && (
                             <button className="btn-primary" disabled={busy}
                               style={{ padding: '0.25rem 0.625rem', fontSize: '0.72rem' }}
@@ -164,13 +264,22 @@ export default function AppointmentsDashboard() {
                             </button>
                           )}
                           {a.status === 'confirmed' && (
-                            <button className="btn-success" disabled={busy}
+                            <>
+                              <button className="btn-success" disabled={busy}
+                                style={{ padding: '0.25rem 0.625rem', fontSize: '0.72rem' }}
+                                onClick={() => confirmCheckIn(a)}>
+                                {busy ? <span className="spinner" /> : <><IconLogin size={12} />Check In</>}
+                              </button>
+                            </>
+                          )}
+                          {a.status === 'confirmed' && (
+                            <button className="btn-danger" disabled={busy}
                               style={{ padding: '0.25rem 0.625rem', fontSize: '0.72rem' }}
-                              onClick={() => updateStatus(a.id, 'completed')}>
-                              {busy ? <span className="spinner" /> : <><IconCircleCheck size={12} />Complete</>}
+                              onClick={() => confirmCancel(a)}>
+                              <IconX size={12} />Cancel
                             </button>
                           )}
-                          {(a.status === 'pending' || a.status === 'confirmed') && (
+                          {(a.status === 'pending' && !busy) && (
                             <button className="btn-danger" disabled={busy}
                               style={{ padding: '0.25rem 0.625rem', fontSize: '0.72rem' }}
                               onClick={() => confirmCancel(a)}>

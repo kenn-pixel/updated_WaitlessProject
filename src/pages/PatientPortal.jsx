@@ -3,8 +3,10 @@ import { useTheme } from '../context/ThemeContext'
 import {
   IconSun, IconMoon, IconRefresh, IconCalendarPlus,
   IconCircleCheck, IconAlertCircle, IconClock, IconUsers,
-  IconPhone, IconUser, IconStethoscope, IconCalendar,
+  IconPhone, IconUser, IconStethoscope, IconCalendar, IconInbox,
 } from '@tabler/icons-react'
+import { supabase } from '../supabaseClient'
+import { QUEUE_TABLE, APPOINTMENTS_TABLE } from '../supabaseTables'
 
 const SERVICES = ['General Consultation', 'Vaccination', 'Prenatal Check-up', 'Dental', 'Lab Request']
 const TIME_SLOTS = ['8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM']
@@ -60,14 +62,55 @@ function InputIcon({ icon: Icon, children, error }) {
 
 export default function PatientPortal() {
   const { theme, toggle } = useTheme()
-  const [queue, setQueue] = useState(MOCK_QUEUE)
+  const [status, setStatus] = useState({ serving: '—', ahead: 0, avgWait: 0, lastUpdated: new Date() })
   const [refreshing, setRefreshing] = useState(false)
   const [secondsAgo, setSecondsAgo] = useState(0)
   const [confirmed, setConfirmed] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [appointments, setAppointments] = useState([])
+  const [showAppointments, setShowAppointments] = useState(false)
 
   const [form, setForm] = useState({ service: '', date: '', time: '', name: '', phone: '' })
   const [errors, setErrors] = useState({})
+
+  const loadStatus = async () => {
+    const { data, error } = await supabase.from(QUEUE_TABLE).select('*').order('created_at', { ascending: true })
+    if (error) {
+      console.warn('Supabase queue status error:', error)
+      return
+    }
+
+    const rows = data.map(item => ({
+      token: item.token ?? item.ticket ?? item.queue_no ?? 'TBD',
+      status: item.status ?? 'waiting',
+      waitMin: item.wait_min ?? item.waitMin ?? 0,
+    }))
+
+    const servingRow = rows.find(r => r.status === 'serving')
+    const waiting = rows.filter(r => r.status === 'waiting')
+    const avgWait = waiting.length ? Math.max(1, Math.round(waiting.reduce((sum, r) => sum + r.waitMin, 0) / waiting.length)) : 0
+
+    setStatus({
+      serving: servingRow ? servingRow.token : '—',
+      ahead: waiting.length,
+      avgWait,
+      lastUpdated: new Date(),
+    })
+  }
+
+  useEffect(() => {
+    loadStatus()
+
+    const channel = supabase.channel('patient-portal-queue')
+      .on('postgres_changes', { event: '*', schema: 'public', table: QUEUE_TABLE }, () => {
+        loadStatus()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
 
   // Auto-refresh every 30s
   useEffect(() => {
@@ -75,12 +118,11 @@ export default function PatientPortal() {
       setSecondsAgo(s => s + 1)
     }, 1000)
     return () => clearInterval(interval)
-  }, [queue])
+  }, [])
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    await new Promise(r => setTimeout(r, 800))
-    setQueue({ ...MOCK_QUEUE, lastUpdated: new Date() })
+    await loadStatus()
     setSecondsAgo(0)
     setRefreshing(false)
   }
@@ -101,12 +143,58 @@ export default function PatientPortal() {
     if (Object.keys(e).length) { setErrors(e); return }
     setErrors({})
     setLoading(true)
-    await new Promise(r => setTimeout(r, 1400))
-    setConfirmed({ token: 'A-047', ...form })
-    setLoading(false)
+
+    try {
+      // Generate token (e.g., A-001, A-002)
+      const randomNum = Math.floor(Math.random() * 100000)
+      const token = `A-${String(randomNum).padStart(3, '0')}`
+
+      const { data, error } = await supabase.from(APPOINTMENTS_TABLE).insert([
+        {
+          token: token,
+          name: form.name,
+          phone: form.phone,
+          service: form.service,
+          date: form.date,
+          time: form.time,
+          status: 'pending',
+        },
+      ]).select()
+
+      if (error) {
+        throw error
+      }
+
+      setConfirmed({ token, ...form })
+      await loadAppointments(form.phone)
+    } catch (error) {
+      console.error('Failed to book appointment:', error)
+      setErrors({ submit: `Error: ${error.message}` })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadAppointments = async (phone) => {
+    const { data, error } = await supabase.from(APPOINTMENTS_TABLE).select('*').eq('phone', phone)
+    if (error) {
+      console.warn('Failed to load appointments:', error)
+      return
+    }
+    setAppointments(data || [])
   }
 
   const set = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }))
+
+  const handleViewAppointments = async () => {
+    if (!form.phone && !confirmed?.phone) {
+      setErrors({ phone: 'Enter your phone number to view appointments' })
+      return
+    }
+    const phone = confirmed?.phone || form.phone
+    await loadAppointments(phone)
+    setShowAppointments(true)
+  }
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
@@ -174,14 +262,14 @@ export default function PatientPortal() {
               borderRadius: '1rem', padding: '0.25rem 1.5rem',
               lineHeight: 1.3,
             }}>
-              {queue.serving}
+              {status.serving}
             </div>
           </div>
 
           {/* Stats row */}
           <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
-            <StatPill icon={IconUsers} label="Patients Ahead" value={queue.ahead} color="#F5A623" />
-            <StatPill icon={IconClock} label="Est. Wait Time" value={`~${queue.avgWait} min`} color="#00C9A7" />
+            <StatPill icon={IconUsers} label="Patients Ahead" value={status.ahead} color="#F5A623" />
+            <StatPill icon={IconClock} label="Est. Wait Time" value={`~${status.avgWait} min`} color="#00C9A7" />
           </div>
 
           <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '0.75rem', textAlign: 'right' }}>
@@ -334,6 +422,73 @@ export default function PatientPortal() {
             </form>
           </div>
         )}
+
+        {/* My Appointments List */}
+        <div className="card" style={{ marginTop: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <IconCalendarPlus size={18} style={{ color: '#00C9A7' }} />
+              <h2 style={{ fontSize: '1rem', fontWeight: 700 }}>My Appointments</h2>
+            </div>
+            <button className="btn-secondary" onClick={handleViewAppointments}
+              style={{ padding: '0.375rem 0.75rem', fontSize: '0.75rem' }}>
+              Load My Appointments
+            </button>
+          </div>
+
+          {showAppointments ? (
+            appointments.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)' }}>
+                <IconInbox size={36} style={{ opacity: 0.3, marginBottom: '0.5rem' }} />
+                <p style={{ fontSize: '0.875rem' }}>No appointments found.</p>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {appointments.map(appt => {
+                  const statusColor = {
+                    pending: '#F5A623',
+                    confirmed: '#00C9A7',
+                    completed: '#3DD68C',
+                    cancelled: '#FF5F5F',
+                  }[appt.status] || '#8B949E'
+                  
+                  return (
+                    <div key={appt.id} className="card-2" style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '0.75rem 1rem',
+                    }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: '0.875rem', marginBottom: '0.25rem' }}>
+                          {appt.service}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', gap: '0.75rem' }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <IconCalendar size={12} />{appt.date}
+                          </span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <IconClock size={12} />{appt.time}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{
+                        padding: '0.375rem 0.75rem', borderRadius: '0.375rem',
+                        background: `color-mix(in srgb, ${statusColor} 15%, transparent)`,
+                        color: statusColor, fontSize: '0.75rem', fontWeight: 600,
+                        textTransform: 'capitalize',
+                      }}>
+                        {appt.status}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          ) : (
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1rem 0' }}>
+              Click "Load My Appointments" and enter your phone number to see your bookings.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Footer */}

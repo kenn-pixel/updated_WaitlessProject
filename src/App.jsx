@@ -11,8 +11,17 @@ import Analytics            from './pages/Analytics'
 import Settings             from './pages/Settings'
 
 function ProtectedRoute({ children }) {
-  const { user } = useAuth()
+  const { user, authLoading } = useAuth()
+  if (authLoading) return null
   return user ? children : <Navigate to="/login" replace />
+}
+
+function StaffRoute({ children }) {
+  const { user, authLoading } = useAuth()
+  if (authLoading) return null
+  if (!user) return <Navigate to="/login" replace />
+  if (user.role !== 'staff' && user.role !== 'admin') return <Navigate to="/" replace />
+  return children
 }
 
 function AppRoutes() {
@@ -20,8 +29,8 @@ function AppRoutes() {
     <Routes>
       <Route path="/"             element={<PatientPortal />} />
       <Route path="/login"        element={<LoginPage />} />
-      <Route path="/dashboard"    element={<ProtectedRoute><QueueDashboard /></ProtectedRoute>} />
-      <Route path="/appointments" element={<ProtectedRoute><AppointmentsDashboard /></ProtectedRoute>} />
+      <Route path="/dashboard"    element={<StaffRoute><QueueDashboard /></StaffRoute>} />
+      <Route path="/appointments" element={<StaffRoute><AppointmentsDashboard /></StaffRoute>} />
       <Route path="/analytics"    element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
       <Route path="/settings"     element={<ProtectedRoute><Settings /></ProtectedRoute>} />
       <Route path="*"             element={<Navigate to="/" replace />} />
