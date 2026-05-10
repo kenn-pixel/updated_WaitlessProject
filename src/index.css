@@ -224,6 +224,96 @@
   .sidebar.open  { width: 220px; }
   .sidebar.closed { width: 60px; }
 
+  .portal-page {
+    max-width: 680px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 1.5rem 1rem 3rem;
+  }
+
+  .portal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0 1.25rem;
+    flex-wrap: wrap;
+  }
+
+  .portal-brand {
+    flex-shrink: 0;
+  }
+
+  .portal-status-card {
+    margin-bottom: 1.25rem;
+  }
+
+  .portal-time-grid button {
+    flex: 1 1 120px;
+    min-width: 120px;
+  }
+
+  .portal-appointment-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .portal-appointment-card > div:first-child {
+    min-width: 0;
+  }
+
+  .portal-appointment-card > div:last-child {
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 640px) {
+    .portal-page {
+      padding: 1rem 0.75rem 2rem;
+    }
+
+    .portal-header {
+      padding: 0.75rem 0.75rem 0.5rem;
+    }
+
+    .portal-time-grid button {
+      min-width: 0;
+      flex: 1 1 calc(50% - 0.5rem);
+    }
+
+    .portal-appointment-card {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .portal-appointment-card > div:last-child {
+      width: 100%;
+      text-align: left;
+    }
+
+    .portal-status-card .token,
+    .portal-confirmed-card .token {
+      font-size: 2.5rem;
+    }
+
+    .portal-status-card,
+    .card,
+    .card-2 {
+      padding: 1rem;
+    }
+
+    .btn-secondary,
+    .btn-primary {
+      width: 100%;
+    }
+
+    .portal-header a,
+    .portal-header button {
+      width: auto;
+    }
+  }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }

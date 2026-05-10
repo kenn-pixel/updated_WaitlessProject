@@ -24,64 +24,6 @@ export default function LoginPage() {
     return e
   }
 
-  const handleCreateDemoUser = async () => {
-    const demoCredentials = {
-      email: 'demo.staff@bhc.gov.ph',
-      password: 'Demo1234!'
-    }
-
-    setForm(demoCredentials)
-    setErrors({})
-    setApiError('')
-    setInfoMessage('')
-    setLoading(true)
-    setIsSignup(true)
-
-    const { error, data } = await signUp(demoCredentials.email, demoCredentials.password)
-    setLoading(false)
-
-    if (error) {
-      setApiError(error.message || 'Unable to create demo account. Try signing in instead.')
-      return
-    }
-
-    if (data?.user) {
-      navigate('/dashboard')
-      return
-    }
-
-    setInfoMessage('Demo account created. Check your email to verify and then sign in.')
-  }
-
-  const handleCreateAdminDemoUser = async () => {
-    const adminCredentials = {
-      email: 'demo.admin@bhc.gov.ph',
-      password: 'Admin1234!'
-    }
-
-    setForm(adminCredentials)
-    setErrors({})
-    setApiError('')
-    setInfoMessage('')
-    setLoading(true)
-    setIsSignup(true)
-
-    const { error, data } = await signUp(adminCredentials.email, adminCredentials.password)
-    setLoading(false)
-
-    if (error) {
-      setApiError(error.message || 'Unable to create admin demo account. Try signing in instead.')
-      return
-    }
-
-    if (data?.user) {
-      navigate('/analytics')
-      return
-    }
-
-    setInfoMessage('Admin demo account created. Check your email to verify and then sign in.')
-  }
-
   const handleSubmit = async (ev) => {
     ev.preventDefault()
     const e = validate()
@@ -249,15 +191,6 @@ export default function LoginPage() {
               .
             </>
           )}
-        </div>
-
-        <div style={{ textAlign: 'center', marginTop: '1rem', display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
-          <button className="btn-secondary" type="button" onClick={handleCreateDemoUser} style={{ padding: '0.75rem 1rem', border: 'none', cursor: 'pointer' }}>
-            Create demo staff account
-          </button>
-          <button className="btn-secondary" type="button" onClick={handleCreateAdminDemoUser} style={{ padding: '0.75rem 1rem', border: 'none', cursor: 'pointer' }}>
-            Create demo admin account
-          </button>
         </div>
 
         <p style={{ textAlign: 'center', marginTop: '1.25rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>

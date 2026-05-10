@@ -199,38 +199,36 @@ export default function PatientPortal() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
       {/* Header */}
-      <header style={{
+      <header className="portal-header" style={{
         background: 'var(--surface)', borderBottom: '1px solid var(--border)',
-        padding: '0 1.25rem', height: '56px',
-        display: 'flex', alignItems: 'center', gap: '0.75rem',
         position: 'sticky', top: 0, zIndex: 50,
       }}>
-        <div style={{
+        <div className="portal-brand" style={{
           width: 30, height: 30, borderRadius: '8px', background: '#00C9A7',
           display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
         }}>
           <span style={{ color: '#0D1117', fontWeight: 900, fontSize: '0.8rem' }}>W</span>
         </div>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: '0.95rem', lineHeight: 1.2 }}>WaitLess</div>
           <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Barangay Health Center</div>
         </div>
         <a href="/login" style={{
           fontSize: '0.75rem', color: 'var(--text-muted)', textDecoration: 'none',
           padding: '0.375rem 0.75rem', border: '1px solid var(--border)', borderRadius: '0.375rem',
+          whiteSpace: 'nowrap',
         }}>
           Staff Login
         </a>
-        <button className="btn-secondary" onClick={toggle} style={{ padding: '0.375rem', border: 'none' }}>
+        <button className="btn-secondary" onClick={toggle} style={{ padding: '0.375rem', border: 'none', flexShrink: 0 }}>
           {theme === 'dark' ? <IconSun size={17} /> : <IconMoon size={17} />}
         </button>
       </header>
 
-      <div style={{ maxWidth: '680px', margin: '0 auto', padding: '1.5rem 1rem 3rem' }}>
+      <div className="portal-page">
 
         {/* Live Queue Status */}
-        <div className="card" style={{
-          marginBottom: '1.25rem',
+        <div className="card portal-status-card" style={{
           borderColor: 'color-mix(in srgb, #00C9A7 35%, var(--border))',
           background: 'color-mix(in srgb, #00C9A7 4%, var(--surface))',
         }}>
@@ -279,7 +277,7 @@ export default function PatientPortal() {
 
         {/* Booking Form or Confirmation */}
         {confirmed ? (
-          <div className="card" style={{
+          <div className="card portal-confirmed-card" style={{
             borderColor: 'color-mix(in srgb, #3DD68C 35%, var(--border))',
             background: 'color-mix(in srgb, #3DD68C 4%, var(--surface))',
           }}>
@@ -370,7 +368,7 @@ export default function PatientPortal() {
               {/* Time Slots */}
               <div>
                 <FieldLabel required>Available Time Slots</FieldLabel>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                <div className="portal-time-grid" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
                   {TIME_SLOTS.map(t => (
                     <button key={t} type="button" onClick={() => setForm(f => ({ ...f, time: t }))}
                       style={{
@@ -453,8 +451,8 @@ export default function PatientPortal() {
                   }[appt.status] || '#8B949E'
                   
                   return (
-                    <div key={appt.id} className="card-2" style={{
-                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    <div key={appt.id} className="card-2 portal-appointment-card" style={{
+                      justifyContent: 'space-between', alignItems: 'center',
                       padding: '0.75rem 1rem',
                     }}>
                       <div style={{ flex: 1 }}>

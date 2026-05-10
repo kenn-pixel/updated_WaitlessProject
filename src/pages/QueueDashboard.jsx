@@ -78,6 +78,8 @@ export default function QueueDashboard() {
   const [queue, setQueue] = useState([])
   const [serving, setServing] = useState(null)
   const [servedCount, setServedCount] = useState(0)
+  const [avgWait, setAvgWait] = useState(0)
+  const [completion, setCompletion] = useState(0)
   const [callingNext, setCallingNext] = useState(false)
   const [doneBusy, setDoneBusy] = useState(false)
   const [smsBusy, setSmsBusy] = useState(false)
@@ -122,6 +124,19 @@ export default function QueueDashboard() {
     setServing(currentServing)
     setQueue(waiting)
     setServedCount(served.length)
+
+    // Calculate average wait time for waiting patients
+    const avgWaitTime = waiting.length > 0
+      ? Math.round(waiting.reduce((sum, item) => sum + (item.waitMin || 0), 0) / waiting.length)
+      : 0
+    setAvgWait(avgWaitTime)
+
+    // Calculate completion rate: served / (served + waiting + serving)
+    const totalProcessed = served.length + waiting.length + (currentServing ? 1 : 0)
+    const completionRate = totalProcessed > 0
+      ? Math.round((served.length / totalProcessed) * 100)
+      : 0
+    setCompletion(completionRate)
   }
 
   useEffect(() => {
@@ -241,8 +256,8 @@ export default function QueueDashboard() {
       <div style={{ display: 'flex', gap: '0.875rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
         <StatCard icon={IconUsers}     label="Waiting"      value={queue.length}  color="#F5A623" />
         <StatCard icon={IconCircleCheck} label="Served Today" value={servedCount}  color="#3DD68C" />
-        <StatCard icon={IconClock}     label="Avg Wait"     value="~18 min"       color="#00C9A7" />
-        <StatCard icon={IconTrendingUp} label="Completion"  value="87%"           color="#00C9A7" sub="Today" />
+        <StatCard icon={IconClock}     label="Avg Wait"     value={`~${avgWait} min`} color="#00C9A7" />
+        <StatCard icon={IconTrendingUp} label="Completion"  value={`${completion}%`} color="#00C9A7" sub="Today" />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
