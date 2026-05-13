@@ -8,6 +8,7 @@ import {
   IconTrash,
   IconMail,
   IconBuildingStore,
+  IconClock,
 } from '@tabler/icons-react'
 import DashboardLayout from '../components/DashboardLayout'
 import { useAuth } from '../context/AuthContext'
@@ -27,12 +28,19 @@ const defaultSecurity = {
   saveActivityLog: false,
 }
 
+const defaultClinicHours = {
+  openTime: '08:00',
+  closeTime: '17:00',
+  operatingDays: '1,2,3,4,5',
+}
+
 export default function Settings() {
   const { user } = useAuth()
   const [profile, setProfile] = useState(defaultProfile)
   const [security, setSecurity] = useState(defaultSecurity)
+  const [clinicHours, setClinicHours] = useState(defaultClinicHours)
   const [passwords, setPasswords] = useState({ newPassword: '', confirmPassword: '' })
-  const [status, setStatus] = useState({ profile: '', security: '', password: '' })
+  const [status, setStatus] = useState({ profile: '', security: '', clinic: '', password: '' })
 
   useEffect(() => {
     const saved = window.localStorage.getItem('wl-settings')
@@ -49,6 +57,30 @@ export default function Settings() {
   useEffect(() => {
     window.localStorage.setItem('wl-settings', JSON.stringify({ profile, security }))
   }, [profile, security])
+
+  useEffect(() => {
+    const loadClinicHours = async () => {
+      const { data, error } = await supabase
+        .from('clinic_settings')
+        .select('*')
+        .eq('key', 'operating_hours')
+        .single()
+
+      if (error) {
+        // no saved clinic hours yet, keep defaults
+        return
+      }
+
+      setClinicHours(prev => ({
+        ...prev,
+        openTime: data.open_time || prev.openTime,
+        closeTime: data.close_time || prev.closeTime,
+        operatingDays: data.operating_days || prev.operatingDays,
+      }))
+    }
+
+    loadClinicHours()
+  }, [])
 
   const handleProfileChange = (field, value) => {
     setProfile(prev => ({ ...prev, [field]: value }))
@@ -68,6 +100,26 @@ export default function Settings() {
   const handleSaveSecurity = event => {
     event.preventDefault()
     setStatus(prev => ({ ...prev, security: 'Security settings saved.' }))
+  }
+
+  const handleSaveClinicHours = async event => {
+    event.preventDefault()
+    const { openTime, closeTime, operatingDays } = clinicHours
+    const { error } = await supabase
+      .from('clinic_settings')
+      .upsert({
+        key: 'operating_hours',
+        open_time: openTime,
+        close_time: closeTime,
+        operating_days: operatingDays,
+      }, { onConflict: 'key' })
+
+    if (error) {
+      setStatus(prev => ({ ...prev, clinic: error.message || 'Unable to save clinic hours.' }))
+      return
+    }
+
+    setStatus(prev => ({ ...prev, clinic: 'Clinic operating hours updated.' }))
   }
 
   const handleExportSettings = () => {
@@ -209,6 +261,66 @@ export default function Settings() {
 
             {status.profile && (
               <p style={{ margin: 0, color: '#00C9A7', fontSize: '0.9rem' }}>{status.profile}</p>
+            )}
+          </form>
+        </section>
+
+        <section className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+            <IconClock size={24} />
+            <div>
+              <h2 style={{ margin: 0, fontSize: '1rem', fontWeight: 700 }}>Clinic operating hours</h2>
+              <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                Update the clinic opening and closing times shown to patients.
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSaveClinicHours} style={{ display: 'grid', gap: '1rem' }}>
+            <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: '1fr 1fr' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Open time
+                </label>
+                <input
+                  className="input-field"
+                  type="time"
+                  value={clinicHours.openTime}
+                  onChange={e => setClinicHours(prev => ({ ...prev, openTime: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Close time
+                </label>
+                <input
+                  className="input-field"
+                  type="time"
+                  value={clinicHours.closeTime}
+                  onChange={e => setClinicHours(prev => ({ ...prev, closeTime: e.target.value }))}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Operating days
+              </label>
+              <input
+                className="input-field"
+                type="text"
+                placeholder="e.g. 1,2,3,4,5"
+                value={clinicHours.operatingDays}
+                onChange={e => setClinicHours(prev => ({ ...prev, operatingDays: e.target.value }))}
+              />
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Use day numbers 0-6 (Sunday=0). Default is 1,2,3,4,5.
+              </p>
+            </div>
+
+            <button className="btn-primary" type="submit">Save clinic hours</button>
+            {status.clinic && (
+              <p style={{ margin: 0, color: '#00C9A7', fontSize: '0.9rem' }}>{status.clinic}</p>
             )}
           </form>
         </section>

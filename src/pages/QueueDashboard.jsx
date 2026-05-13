@@ -18,6 +18,13 @@ const PRIORITY_META = {
   normal: { label: 'Normal', color: '#8B949E' },
 }
 
+const PRIORITY_OPTIONS = [
+  { value: 'normal', label: 'Normal' },
+  { value: 'urgent', label: 'Urgent' },
+  { value: 'senior', label: 'Senior' },
+  { value: 'pwd', label: 'PWD' },
+]
+
 function StatCard({ icon: Icon, label, value, color = '#00C9A7', sub }) {
   return (
     <div className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0 }}>
@@ -37,7 +44,7 @@ function StatCard({ icon: Icon, label, value, color = '#00C9A7', sub }) {
   )
 }
 
-function QueueItem({ item, onSkip }) {
+function QueueItem({ item, onSkip, onPromote }) {
   const meta = PRIORITY_META[item.priority]
   return (
     <div style={{
@@ -45,6 +52,7 @@ function QueueItem({ item, onSkip }) {
       padding: '0.75rem 1rem', borderRadius: '0.625rem',
       background: 'var(--surface-2)', border: '1px solid var(--border)',
       transition: 'border-color 0.15s ease',
+      flexWrap: 'wrap',
     }}>
       <span className="token" style={{ fontSize: '1rem', fontWeight: 700, color: '#00C9A7', minWidth: '3.5rem' }}>
         {item.token}
@@ -66,9 +74,16 @@ function QueueItem({ item, onSkip }) {
       <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 3, minWidth: '3.5rem', justifyContent: 'flex-end' }}>
         <IconClock size={11} />{item.waitMin}m
       </div>
-      <button className="btn-danger" style={{ padding: '0.25rem 0.625rem', fontSize: '0.72rem' }} onClick={() => onSkip(item)}>
-        <IconPlayerSkipForward size={13} />
-      </button>
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginLeft: 'auto' }}>
+        {item.priority !== 'urgent' && onPromote && (
+          <button type="button" className="btn-secondary" style={{ padding: '0.25rem 0.625rem', fontSize: '0.72rem' }} onClick={() => onPromote(item)}>
+            Prioritize
+          </button>
+        )}
+        <button className="btn-danger" style={{ padding: '0.25rem 0.625rem', fontSize: '0.72rem' }} onClick={() => onSkip(item)}>
+          <IconPlayerSkipForward size={13} />
+        </button>
+      </div>
     </div>
   )
 }
@@ -84,6 +99,10 @@ export default function QueueDashboard() {
   const [doneBusy, setDoneBusy] = useState(false)
   const [smsBusy, setSmsBusy] = useState(false)
   const [fetchError, setFetchError] = useState('')
+  const [walkInForm, setWalkInForm] = useState({ name: '', phone: '', service: '', priority: 'normal' })
+  const [walkInErrors, setWalkInErrors] = useState({})
+  const [walkInBusy, setWalkInBusy] = useState(false)
+  const [walkInSuccess, setWalkInSuccess] = useState('')
 
   const loadQueue = async () => {
     const { data, error } = await supabase.from(QUEUE_TABLE).select('*').order('created_at', { ascending: true })
@@ -96,8 +115,12 @@ export default function QueueDashboard() {
     if (!data || data.length === 0) {
       console.warn('No queue data returned - likely RLS is blocking access. Data:', data)
       setFetchError('No queue data found. Check Supabase RLS policies.')
+      setQueue([])
+      setServing(null)
       return
     }
+
+    setFetchError('')
 
     const entries = data.map((item) => ({
       id: item.id,
@@ -112,6 +135,9 @@ export default function QueueDashboard() {
     }))
 
     const sorted = entries.sort((a, b) => {
+      const priorityA = PRIORITY_ORDER[a.priority] ?? PRIORITY_ORDER.normal
+      const priorityB = PRIORITY_ORDER[b.priority] ?? PRIORITY_ORDER.normal
+      if (priorityA !== priorityB) return priorityA - priorityB
       const positionDiff = (a.position ?? 0) - (b.position ?? 0)
       if (positionDiff !== 0) return positionDiff
       return new Date(a.createdAt) - new Date(b.createdAt)
@@ -152,6 +178,86 @@ export default function QueueDashboard() {
       supabase.removeChannel(channel)
     }
   }, [])
+
+  const validateWalkIn = () => {
+    const errors = {}
+    console.log('[Walk-in Validation] Form:', walkInForm)
+    if (!walkInForm.name.trim()) errors.name = 'Patient name is required.'
+    // Allow phone with spaces, dashes, or no separators - just check it starts with 09 and has 11 digits total
+    const phoneDigits = walkInForm.phone.replace(/\D/g, '')
+    if (!/^09\d{9}$/.test(phoneDigits)) errors.phone = 'Enter a valid PH mobile number (09XXXXXXXXX). Got: ' + phoneDigits
+    if (!walkInForm.service) errors.service = 'Please select a service.'
+    if (!walkInForm.priority) errors.priority = 'Please choose a priority.'
+    console.log('[Walk-in Validation] Errors:', errors)
+    return errors
+  }
+
+  const generateWalkInToken = () => {
+    const sequence = queue.reduce((max, item) => {
+      const match = String(item.token).match(/W-(\d{3})$/)
+      if (!match) return max
+      return Math.max(max, Number(match[1]))
+    }, 0)
+    return `W-${String(sequence + 1).padStart(3, '0')}`
+  }
+
+  const registerWalkIn = async () => {
+    console.log('[Register Walk-in] Starting registration')
+    const errors = validateWalkIn()
+    console.log('[Register Walk-in] Validation errors:', errors)
+    setWalkInErrors(errors)
+    setWalkInSuccess('')
+    if (Object.keys(errors).length > 0) {
+      console.log('[Register Walk-in] Validation failed, stopping')
+      return
+    }
+
+    setWalkInBusy(true)
+    setFetchError('')
+    try {
+      const nextPosition = Math.max(0, ...(queue.map(item => item.position ?? 0)), serving?.position ?? 0) + 1
+      const token = generateWalkInToken()
+      console.log('[Register Walk-in] Generated token:', token, 'Position:', nextPosition)
+      console.log('[Register Walk-in] Inserting:', {
+        token,
+        name: walkInForm.name.trim(),
+        service: walkInForm.service,
+        priority: walkInForm.priority,
+        phone: walkInForm.phone.trim(),
+        status: 'waiting',
+        position: nextPosition,
+        wait_min: 0,
+      })
+      const { data, error } = await supabase.from(QUEUE_TABLE).insert([
+        {
+          token,
+          name: walkInForm.name.trim(),
+          service: walkInForm.service,
+          priority: walkInForm.priority,
+          phone: walkInForm.phone.trim(),
+          status: 'waiting',
+          position: nextPosition,
+          wait_min: 0,
+        },
+      ]).select()
+
+      console.log('[Register Walk-in] Insert response:', { data, error })
+      if (error || !data || !data.length) {
+        throw error || new Error('No row was inserted.')
+      }
+
+      setWalkInForm({ name: '', phone: '', service: '', priority: 'normal' })
+      setWalkInErrors({})
+      setWalkInSuccess(`Walk-in registered as ${token}`)
+      console.log('[Register Walk-in] Success! Reloading queue')
+      await loadQueue()
+    } catch (error) {
+      console.error('Failed to register walk-in patient:', error)
+      setFetchError(`Registration error: ${error.message}`)
+    } finally {
+      setWalkInBusy(false)
+    }
+  }
 
   const callNext = async () => {
     if (!queue.length) return
@@ -196,6 +302,25 @@ export default function QueueDashboard() {
     await supabase.from(QUEUE_TABLE).update({ status: 'served' }).eq('id', serving.id)
     await loadQueue()
     setDoneBusy(false)
+  }
+
+  const promotePriority = async (item) => {
+    setFetchError('')
+    try {
+      const { error } = await supabase
+        .from(QUEUE_TABLE)
+        .update({ priority: 'urgent' })
+        .eq('id', item.id)
+
+      if (error) {
+        throw error
+      }
+
+      await loadQueue()
+    } catch (error) {
+      console.error('Failed to prioritize patient:', error)
+      setFetchError('Unable to prioritize patient. Please refresh and try again.')
+    }
   }
 
   const confirmSkip = (item) => {
@@ -364,12 +489,113 @@ export default function QueueDashboard() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', overflowY: 'auto', maxHeight: '420px' }}>
               {queue.map(item => (
-                <QueueItem key={item.id} item={item} onSkip={confirmSkip} />
+                <QueueItem key={item.id} item={item} onSkip={confirmSkip} onPromote={promotePriority} />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      <div className="card" style={{ marginTop: '1.25rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+          <IconInbox size={18} style={{ color: '#00C9A7' }} />
+          <h2 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>Register Walk-in Patient</h2>
+        </div>
+
+        {Object.keys(walkInErrors).length > 0 && (
+          <div className="card-2" style={{ padding: '0.85rem 1rem', marginBottom: '1rem', borderColor: '#FF5F5F', color: '#FF5F5F', background: 'color-mix(in srgb, #FF5F5F 8%, var(--surface))' }}>
+            <strong>Validation Errors:</strong>
+            <ul style={{ margin: '0.5rem 0 0', paddingLeft: '1.25rem' }}>
+              {Object.entries(walkInErrors).map(([key, msg]) => (
+                <li key={key} style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>{msg}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gap: '1rem' }}>
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              Full Name
+            </label>
+            <input
+              className={`input-field ${walkInErrors.name ? 'error' : ''}`}
+              type="text"
+              placeholder="Patient name"
+              value={walkInForm.name}
+              onChange={e => setWalkInForm(prev => ({ ...prev, name: e.target.value }))}
+            />
+            {walkInErrors.name && <p style={{ color: '#FF5F5F', fontSize: '0.75rem', marginTop: '0.35rem' }}>{walkInErrors.name}</p>}
+          </div>
+
+          <div>
+            <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              Mobile Number
+            </label>
+            <input
+              className={`input-field ${walkInErrors.phone ? 'error' : ''}`}
+              type="tel"
+              placeholder="09XXXXXXXXX"
+              value={walkInForm.phone}
+              onChange={e => setWalkInForm(prev => ({ ...prev, phone: e.target.value }))}
+            />
+            {walkInErrors.phone && <p style={{ color: '#FF5F5F', fontSize: '0.75rem', marginTop: '0.35rem' }}>{walkInErrors.phone}</p>}
+          </div>
+
+          <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: '1fr 1fr' }}>
+            <div>
+              <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Service
+              </label>
+              <select
+                className={`input-field ${walkInErrors.service ? 'error' : ''}`}
+                value={walkInForm.service}
+                onChange={e => setWalkInForm(prev => ({ ...prev, service: e.target.value }))}
+              >
+                <option value="">Select a service...</option>
+                <option value="General Consultation">General Consultation</option>
+                <option value="Vaccination">Vaccination</option>
+                <option value="Prenatal Check-up">Prenatal Check-up</option>
+                <option value="Dental">Dental</option>
+                <option value="Lab Request">Lab Request</option>
+              </select>
+              {walkInErrors.service && <p style={{ color: '#FF5F5F', fontSize: '0.75rem', marginTop: '0.35rem' }}>{walkInErrors.service}</p>}
+            </div>
+
+            <div>
+              <label style={{ display: 'block', marginBottom: '0.35rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Priority
+              </label>
+              <select
+                className={`input-field ${walkInErrors.priority ? 'error' : ''}`}
+                value={walkInForm.priority}
+                onChange={e => setWalkInForm(prev => ({ ...prev, priority: e.target.value }))}
+              >
+                {PRIORITY_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              {walkInErrors.priority && <p style={{ color: '#FF5F5F', fontSize: '0.75rem', marginTop: '0.35rem' }}>{walkInErrors.priority}</p>}
+            </div>
+          </div>
+
+          {walkInSuccess && (
+            <div className="card-2" style={{ padding: '0.85rem 1rem', borderColor: '#00C9A7', color: '#0B6E5B' }}>
+              {walkInSuccess}
+            </div>
+          )}
+          <button
+            className="btn-primary"
+            type="button"
+            onClick={registerWalkIn}
+            disabled={walkInBusy}
+            style={{ width: '100%', padding: '0.75rem', fontSize: '0.9rem' }}
+          >
+            {walkInBusy ? <><span className="spinner" /> Registering...</> : 'Register Walk-in Patient'}
+          </button>
+        </div>
+      </div>
     </DashboardLayout>
   )
 }
+

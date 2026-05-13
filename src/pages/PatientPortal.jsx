@@ -10,6 +10,7 @@ import { QUEUE_TABLE, APPOINTMENTS_TABLE } from '../supabaseTables'
 
 const SERVICES = ['General Consultation', 'Vaccination', 'Prenatal Check-up', 'Dental', 'Lab Request']
 const TIME_SLOTS = ['8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM']
+const PRIORITY_ORDER = { urgent: 0, senior: 1, pwd: 2, normal: 3 }
 
 const MOCK_QUEUE = { serving: 'A-003', ahead: 4, avgWait: 20, lastUpdated: new Date() }
 
@@ -68,7 +69,9 @@ export default function PatientPortal() {
   const [confirmed, setConfirmed] = useState(null)
   const [loading, setLoading] = useState(false)
   const [appointments, setAppointments] = useState([])
+  const [queueRows, setQueueRows] = useState([])
   const [showAppointments, setShowAppointments] = useState(false)
+  const [clinicHours, setClinicHours] = useState({ openTime: '08:00', closeTime: '17:00', operatingDays: '1,2,3,4,5' })
 
   const [form, setForm] = useState({ service: '', date: '', time: '', name: '', phone: '' })
   const [errors, setErrors] = useState({})
@@ -84,10 +87,19 @@ export default function PatientPortal() {
       token: item.token ?? item.ticket ?? item.queue_no ?? 'TBD',
       status: item.status ?? 'waiting',
       waitMin: item.wait_min ?? item.waitMin ?? 0,
+      priority: item.priority ?? item.priority_level ?? 'normal',
+      createdAt: item.created_at,
     }))
 
-    const servingRow = rows.find(r => r.status === 'serving')
-    const waiting = rows.filter(r => r.status === 'waiting')
+    const sortedRows = rows.sort((a, b) => {
+      const priorityA = PRIORITY_ORDER[a.priority] ?? PRIORITY_ORDER.normal
+      const priorityB = PRIORITY_ORDER[b.priority] ?? PRIORITY_ORDER.normal
+      if (priorityA !== priorityB) return priorityA - priorityB
+      return new Date(a.createdAt) - new Date(b.createdAt)
+    })
+
+    const servingRow = sortedRows.find(r => r.status === 'serving')
+    const waiting = sortedRows.filter(r => r.status === 'waiting')
     const avgWait = waiting.length ? Math.max(1, Math.round(waiting.reduce((sum, r) => sum + r.waitMin, 0) / waiting.length)) : 0
 
     setStatus({
@@ -96,10 +108,28 @@ export default function PatientPortal() {
       avgWait,
       lastUpdated: new Date(),
     })
+    setQueueRows(sortedRows)
   }
 
   useEffect(() => {
+    const loadClinicHours = async () => {
+      const { data, error } = await supabase
+        .from('clinic_settings')
+        .select('*')
+        .eq('key', 'operating_hours')
+        .single()
+
+      if (!error && data) {
+        setClinicHours({
+          openTime: data.open_time || '08:00',
+          closeTime: data.close_time || '17:00',
+          operatingDays: data.operating_days || '1,2,3,4,5',
+        })
+      }
+    }
+
     loadStatus()
+    loadClinicHours()
 
     const channel = supabase.channel('patient-portal-queue')
       .on('postgres_changes', { event: '*', schema: 'public', table: QUEUE_TABLE }, () => {
@@ -137,21 +167,50 @@ export default function PatientPortal() {
     return e
   }
 
+  const generateDailyToken = async (date) => {
+    const { data, error } = await supabase
+      .from(APPOINTMENTS_TABLE)
+      .select('token')
+      .eq('date', date)
+
+    if (error) {
+      throw error
+    }
+
+    const maxIndex = (data || []).reduce((max, item) => {
+      const token = item.token || ''
+      const match = token.match(/^A-(\d{3})$/)
+      if (!match) return max
+      return Math.max(max, Number(match[1]))
+    }, 0)
+
+    return `A-${String(maxIndex + 1).padStart(3, '0')}`
+  }
+
   const handleSubmit = async (ev) => {
     ev.preventDefault()
     const e = validate()
     if (Object.keys(e).length) { setErrors(e); return }
+
+    if (!isClinicOpenNow()) {
+      setErrors({ submit: 'Booking is unavailable outside operating hours.' })
+      return
+    }
+
+    if (!isOperatingDate(form.date) || !isOperatingTime(form.time)) {
+      setErrors({ submit: `Please choose a date and time inside operating hours (${formatTime(clinicHours.openTime)} – ${formatTime(clinicHours.closeTime)}).` })
+      return
+    }
+
     setErrors({})
     setLoading(true)
 
     try {
-      // Generate token (e.g., A-001, A-002)
-      const randomNum = Math.floor(Math.random() * 100000)
-      const token = `A-${String(randomNum).padStart(3, '0')}`
+      const token = await generateDailyToken(form.date)
 
       const { data, error } = await supabase.from(APPOINTMENTS_TABLE).insert([
         {
-          token: token,
+          token,
           name: form.name,
           phone: form.phone,
           service: form.service,
@@ -184,7 +243,67 @@ export default function PatientPortal() {
     setAppointments(data || [])
   }
 
+  const parseTimeSlot = (time) => {
+    if (!time) return null
+    const normalized = time.trim()
+    if (normalized.includes('AM') || normalized.includes('PM')) {
+      const [hourMinute, period] = normalized.split(' ')
+      if (!hourMinute || !period) return null
+      const [hour, minute] = hourMinute.split(':').map(Number)
+      let normalizedHour = hour
+      if (period === 'PM' && hour !== 12) normalizedHour += 12
+      if (period === 'AM' && hour === 12) normalizedHour = 0
+      return normalizedHour + (minute / 60)
+    }
+
+    const [hour, minute] = normalized.split(':').map(Number)
+    if (Number.isNaN(hour) || Number.isNaN(minute)) return null
+    return hour + (minute / 60)
+  }
+
+  const isOperatingDate = (dateString) => {
+    if (!dateString) return false
+    const date = new Date(`${dateString}T00:00:00`)
+    const operatingDays = clinicHours.operatingDays.split(',').map(d => Number(d.trim())).filter(Number.isFinite)
+    return operatingDays.includes(date.getDay())
+  }
+
+  const isOperatingTime = (timeString) => {
+    const value = parseTimeSlot(timeString)
+    const openValue = parseTimeSlot(clinicHours.openTime)
+    const closeValue = parseTimeSlot(clinicHours.closeTime)
+    return value !== null && openValue !== null && closeValue !== null && value >= openValue && value < closeValue
+  }
+
+  const isClinicOpenNow = () => {
+    const now = new Date()
+    const currentHour = now.getHours() + now.getMinutes() / 60
+    const operatingDays = clinicHours.operatingDays.split(',').map(d => Number(d.trim())).filter(Number.isFinite)
+    const openValue = parseTimeSlot(clinicHours.openTime)
+    const closeValue = parseTimeSlot(clinicHours.closeTime)
+    return openValue !== null && closeValue !== null && operatingDays.includes(now.getDay()) && currentHour >= openValue && currentHour < closeValue
+  }
+
   const set = (key) => (e) => setForm(f => ({ ...f, [key]: e.target.value }))
+
+  const formatTime = (time) => {
+    const value = parseTimeSlot(time)
+    if (value === null) return time
+    const hour = Math.floor(value)
+    const minute = Math.round((value - hour) * 60)
+    const period = hour >= 12 ? 'PM' : 'AM'
+    const normalizedHour = hour % 12 === 0 ? 12 : hour % 12
+    return `${String(normalizedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')} ${period}`
+  }
+
+  const formatOperatingDays = (daysString) => {
+    const allDays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    const days = daysString.split(',').map(d => Number(d.trim())).filter(d => Number.isFinite(d) && d >= 0 && d <= 6).sort((a, b) => a - b)
+    if (days.length === 7) return 'every day'
+    if (days.length === 5 && days.every((d, i) => d === i + 1)) return 'Monday to Friday'
+    if (days.length === 2 && days[0] === 0 && days[1] === 6) return 'Weekends'
+    return days.map(d => allDays[d]).join(', ')
+  }
 
   const handleViewAppointments = async () => {
     if (!form.phone && !confirmed?.phone) {
@@ -195,6 +314,8 @@ export default function PatientPortal() {
     await loadAppointments(phone)
     setShowAppointments(true)
   }
+
+  const clinicOpen = isClinicOpenNow()
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
@@ -275,6 +396,58 @@ export default function PatientPortal() {
           </p>
         </div>
 
+        {/* Queue Monitor */}
+        <div className="card" style={{ marginTop: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <IconUsers size={18} style={{ color: '#00C9A7' }} />
+              <h2 style={{ fontSize: '1rem', fontWeight: 700 }}>Queue Monitor</h2>
+            </div>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {queueRows.length} {queueRows.length === 1 ? 'ticket' : 'tickets'} in queue
+            </span>
+          </div>
+
+          {queueRows.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)' }}>
+              <IconInbox size={36} style={{ opacity: 0.3, marginBottom: '0.5rem' }} />
+              <p style={{ fontSize: '0.875rem' }}>No queue entries available yet.</p>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gap: '0.75rem' }}>
+              {queueRows.map((queue, index) => {
+                const isServing = queue.status === 'serving'
+                const statusLabel = isServing ? 'Now Serving' : 'Waiting'
+                return (
+                  <div key={`${queue.token}-${index}`} className="card-2" style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '0.75rem 1rem', gap: '1rem', flexWrap: 'wrap',
+                  }}>
+                    <div>
+                      <div style={{ fontSize: '1rem', fontWeight: 700 }}>{queue.token}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                        {statusLabel}{isServing ? '' : ` • Position ${index + 1}`}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        Estimated wait: {queue.waitMin} min
+                      </span>
+                      <span style={{
+                        fontSize: '0.75rem', fontWeight: 700,
+                        color: isServing ? '#00C9A7' : '#F5A623',
+                        textTransform: 'uppercase',
+                      }}>
+                        {statusLabel}
+                      </span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
         {/* Booking Form or Confirmation */}
         {confirmed ? (
           <div className="card portal-confirmed-card" style={{
@@ -338,6 +511,24 @@ export default function PatientPortal() {
               <IconCalendarPlus size={18} style={{ color: '#00C9A7' }} />
               <h2 style={{ fontSize: '1rem', fontWeight: 700 }}>Book an Appointment</h2>
             </div>
+
+            {!clinicOpen && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '0.75rem',
+                padding: '0.85rem 1rem', marginBottom: '1rem', borderRadius: '0.75rem',
+                background: 'color-mix(in srgb, #FF5F5F 8%, var(--surface))',
+                border: '1px solid color-mix(in srgb, #FF5F5F 25%, transparent)',
+                color: '#FF5F5F',
+              }}>
+                <IconAlertCircle size={18} />
+                <div>
+                  <strong>Booking unavailable outside operating hours.</strong>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                    Our clinic is open {formatOperatingDays(clinicHours.operatingDays)}, {formatTime(clinicHours.openTime)} – {formatTime(clinicHours.closeTime)}.
+                  </div>
+                </div>
+              </div>
+            )}
 
             <form onSubmit={handleSubmit} noValidate style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               {/* Service */}
@@ -413,7 +604,7 @@ export default function PatientPortal() {
                 </p>
               </div>
 
-              <button className="btn-primary" type="submit" disabled={loading}
+              <button className="btn-primary" type="submit" disabled={loading || !clinicOpen}
                 style={{ width: '100%', padding: '0.75rem', fontSize: '0.9rem', marginTop: '0.25rem' }}>
                 {loading ? <><span className="spinner" /> Confirming...</> : <><IconCalendarPlus size={16} /> Confirm Appointment</>}
               </button>

@@ -26,6 +26,7 @@ export default function LoginPage() {
 
   const handleSubmit = async (ev) => {
     ev.preventDefault()
+    if (loading) return
     const e = validate()
     if (Object.keys(e).length) {
       setErrors(e)
