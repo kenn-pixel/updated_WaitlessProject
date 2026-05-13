@@ -3,6 +3,7 @@ import { ModalsProvider } from '@mantine/modals'
 import { ThemeProvider } from './context/ThemeContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 
+import LandingPage         from './pages/LandingPage'
 import PatientPortal        from './pages/PatientPortal'
 import LoginPage            from './pages/LoginPage'
 import QueueDashboard       from './pages/QueueDashboard'
@@ -27,7 +28,8 @@ function StaffRoute({ children }) {
 function AppRoutes() {
   return (
     <Routes>
-      <Route path="/"             element={<PatientPortal />} />
+      <Route path="/"             element={<LandingPage />} />
+      <Route path="/portal"       element={<PatientPortal />} />
       <Route path="/login"        element={<LoginPage />} />
       <Route path="/dashboard"    element={<StaffRoute><QueueDashboard /></StaffRoute>} />
       <Route path="/appointments" element={<StaffRoute><AppointmentsDashboard /></StaffRoute>} />
